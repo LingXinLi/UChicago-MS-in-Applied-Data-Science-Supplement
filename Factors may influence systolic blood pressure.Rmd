@@ -1,0 +1,296 @@
+---
+title: "sta302 a2"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE, warning=FALSE}
+library(NHANES)
+library(tidyverse)
+library(car)
+library(glmnet)
+library(rms)
+```
+
+```{r}
+small.nhanes <- na.omit(NHANES[NHANES$SurveyYr=="2011_12"
+& NHANES$Age > 17,c(1,3,4,8:11,13,17,20,21,25,46,50,51,52,61)])
+small.nhanes <- as.data.frame(small.nhanes %>%
+group_by(ID) %>% filter(row_number()==1) )
+nrow(small.nhanes)
+## Checking whether there are any ID that was repeated. If not ##
+## then length(unique(small.nhanes$ID)) and nrow(small.nhanes) are same ##
+length(unique(small.nhanes$ID))
+```
+
+```{r}
+## Create training and test set ##
+set.seed(1006850203)
+train <- small.nhanes[sample(seq_len(nrow(small.nhanes)), size = 400),]
+nrow(train)
+length(which(small.nhanes$ID %in% train$ID))
+test <- small.nhanes[!small.nhanes$ID %in% train$ID,]
+nrow(test)
+
+```
+
+\newpage
+exploratory data analysis on the data before split into train dataset and test dataset
+```{r}
+# a boxplot for the numerical variable combined systolic blood pressure reading (BPSysAve) which is our outcome of interest.
+small.nhanes %>% 
+  ggplot(aes(y = BPSysAve))+
+  geom_boxplot(color="black",fill="red")+
+  labs(title="Combined systolic blood pressure reading")
+```
+The range of combined systolic blood pressure reading among all data points is approximately between 80 and 218, the IQR of combined systolic blood pressure reading is about 20, and the median combined systolic blood pressure reading is about 122. It is skewed to the right, and there are many outliers between 81 and 217, and one outlier at 80.
+
+```{r}
+#exact value of the information of the combined systolic blood pressure reading
+summary(small.nhanes$BPSysAve)
+```
+
+
+```{r}
+#We are mainly interested on the effect of smoking (SmokeNow) on the combined systolic blood pressure reading. Here is a side-by-side boxplot for these two variables
+small.nhanes %>% ggplot(aes(x = SmokeNow, y = BPSysAve)) + geom_boxplot()
+```
+From the above plot, we can see that the median combined systolic blood pressure reading of the participant who smokes is about 120 which is slightly lower than the median combined systolic blood pressure reading of the participant who do not smoke which is about 125. The range of combined systolic blood pressure reading of the participant who smokes is approximately between 80 and 201, which is narrower than the range of combined systolic blood pressure reading of the participant who do not smoke which is approximately between 85 and 218. Both boxplots are skewed to the right. Overall, these two boxplots looks roughy the same with small differences.
+
+
+```{r}
+# exploring whether or not there is a relationship between the combined systolic blood pressure of people who do sports and people who do not do sports.
+small.nhanes %>% ggplot(aes(x = PhysActive, y = BPSysAve)) + geom_boxplot()
+```
+From the above plot, we can see that there are significant differences between participant does moderate or vigorous-intensity sports, fitness or recreational activities and who do not do these sports activities. The median combined systolic blood pressure reading of participant who do not do sports is about 125 which is higher than the median combined systolic blood pressure reading of participant who do sports which is about 120. The range of the combined systolic blood pressure reading of participant who do not do sports is approximately between 80 and 219 which is much wider than the range of the combined systolic blood pressure reading of participant who do sports which is approximately between 83 and 180. The IQR of the combined systolic blood pressure reading of participant who do not do sports looks slightly larger than the IQR of the combined systolic blood pressure reading of participant who do sports. Both boxplots are skewed to the right.
+
+```{r}
+# exploring effect of gender on the combined systolic blood pressure.
+small.nhanes %>% ggplot(aes(x = Gender, y = BPSysAve)) + geom_boxplot()
+```
+We can see there is a differences between male and female on the combined systolic blood pressure. The IQR of male combined systolic blood pressure is between 118 and 138 which is concentrate on a higher level compared to female, but the range of female combined systolic blood pressure is wider.
+
+
+
+
+```{r}
+# exploring effect of MaritalStatus on the combined systolic blood pressure.
+small.nhanes %>% ggplot(aes(x = MaritalStatus, y = BPSysAve)) + geom_boxplot()
+```
+
+
+```{r}
+# exploring effect of SleepTrouble on the combined systolic blood pressure.
+small.nhanes %>% ggplot(aes(x = SleepTrouble, y = BPSysAve)) + geom_boxplot()
+```
+
+
+```{r}
+small.nhanes %>% ggplot(aes(x = Age, y = BPSysAve)) + 
+  geom_point() + geom_smooth(se=FALSE, method="lm") + 
+  labs(x = "age", y = "combined systolic blood pressure reading", title = "relationship between age and combined systolic blood pressure reading")
+```
+There is a moderate positive linear relationship between age and combined systolic blood pressure reading.
+
+```{r}
+small.nhanes %>% ggplot(aes(x = BMI, y = BPSysAve)) + 
+  geom_point() + geom_smooth(se=FALSE, method="lm") + 
+  labs(x = "BMI", y = "combined systolic blood pressure reading", title = "relationship between BMI and combined systolic blood pressure reading")
+```
+There is a weak positive linear relationship between age and combined systolic blood pressure reading.
+
+```{r}
+small.nhanes %>% ggplot(aes(x = Poverty, y = BPSysAve)) + 
+  geom_point() + geom_smooth(se=FALSE, method="lm") + 
+  labs(x = "Poverty", y = "combined systolic blood pressure reading", title = "relationship between Poverty and combined systolic blood pressure reading")
+```
+
+
+\newpage
+check multicollinearity 
+```{r}
+#initial model, check multicollinearity 
+mod0 <- lm(BPSysAve ~ ., data = train)
+vif(mod0)
+```
+
+
+```{r}
+# ID is not meaningful
+# value of BMI, weight and height is too big. BMI is calculated based on height and weight, so remove height and weight
+mod1 <- lm(BPSysAve ~ .-ID -Weight -Height, data = train)
+vif(mod1)
+```
+
+\newpage
+Model Selection
+```{r}
+#AIC
+set.seed(1006850203)
+n <- nrow(train)
+sel.var.aic <- step(mod1, trace = 0, k = 2, direction = "both") 
+sel.var.aic<-attr(terms(sel.var.aic), "term.labels")   
+sel.var.aic
+```
+
+```{r}
+#BIC
+set.seed(1006850203)
+n <- nrow(train)
+sel.var.bic <- step(mod1, trace = 0, k = log(n), direction = "both") 
+sel.var.bic <-attr(terms(sel.var.bic), "term.labels")   
+sel.var.bic
+```
+
+```{r}
+### LASSO selection ###
+
+## Perform cross validation to choose lambda ##
+set.seed(1006850203)
+cv.out <- cv.glmnet(x = model.matrix(~., data = train[, -c(1, 12)]), y = train$BPSysAve, standardize = T, alpha = 1)
+plot(cv.out)
+best.lambda <- cv.out$lambda.1se
+best.lambda
+co<-coef(cv.out, s = "lambda.1se")
+```
+
+```{r}
+## threshold for variable selection ##
+
+thresh <- 0.00
+# select variables #
+inds<-which(abs(co) > thresh )
+variables<-row.names(co)[inds]
+sel.var.lasso<-variables[!(variables %in% '(Intercept)')]
+sel.var.lasso
+```
+\newpage
+Model Validation
+
+section1-Cross Validation and prediction performance of each based selection
+```{r}
+### Cross Validation and prediction performance of AIC based selection ###
+ols.aic <- ols(BPSysAve ~ .,data = train[,which(colnames(train) %in% c(sel.var.aic, "BPSysAve"))], 
+               x=T, y=T, model = T)
+
+## 10 fold cross validation ##    
+aic.cross <- calibrate(ols.aic, method = "crossvalidation", B = 10)
+## Calibration plot ##
+pdf("aic_cross.pdf", height = 8, width = 16)
+plot(aic.cross, las = 1, xlab = "Predicted BPSysAve", main = "Cross-Validation calibration with AIC")
+dev.off()
+```
+
+```{r}
+### Cross Validation and prediction performance of BIC based selection ###
+ols.bic <- ols(BPSysAve ~ .,data = train[,which(colnames(train) %in% c(sel.var.bic, "BPSysAve"))], 
+               x=T, y=T, model = T)
+
+## 10 fold cross validation ##    
+bic.cross <- calibrate(ols.bic, method = "crossvalidation", B = 10)
+## Calibration plot ##
+pdf("bic_cross.pdf", height = 8, width = 16)
+plot(bic.cross, las = 1, xlab = "Predicted BPSysAve", main = "Cross-Validation calibration with BIC")
+dev.off()
+```
+
+```{r}
+### Cross Validation and prediction performance of lasso based selection ###
+ols.lasso <- ols(BPSysAve ~ .,data = train[,which(colnames(train) %in% c(sel.var.lasso, "BPSysAve"))], 
+               x=T, y=T, model = T)
+
+## 10 fold cross validation ##    
+lasso.cross <- calibrate(ols.lasso, method = "crossvalidation", B = 10)
+## Calibration plot ##
+pdf("lasso_cross.pdf", height = 8, width = 16)
+plot(lasso.cross, las = 1, xlab = "Predicted BPSysAve", main = "Cross-Validation calibration with lasso")
+dev.off()
+```
+
+We can see that the graph of AIC is the best since the three lines do not deviate very much to each other, and the three lines in the graph of BIC model and lasso model deviate more compared to the lines of AIC model. In other words, the three lines in the graph of AIC looks more coincident.
+
+\newpage
+Model Validation
+
+section2-Prediction error of each based selection
+```{r}
+## Test Error AIC ##
+pred.aic <- predict(ols.aic, newdata = test[,which(colnames(train) %in% c(sel.var.aic, "BPSysAve"))])
+## Prediction error ##
+pred.error.AIC <- mean((test$BPSysAve - pred.aic)^2)
+pred.error.AIC
+```
+
+```{r}
+## Test Error BIC ##
+pred.bic <- predict(ols.bic, newdata = test[,which(colnames(train) %in% c(sel.var.bic, "BPSysAve"))])
+## Prediction error ##
+pred.error.BIC <- mean((test$BPSysAve - pred.bic)^2)
+pred.error.BIC
+```
+
+```{r}
+## Test Error lasso##
+pred.lasso <- predict(ols.lasso, newdata = test[,which(colnames(train) %in% c(sel.var.lasso, "BPSysAve"))])
+## Prediction error ##
+pred.error.lasso <- mean((test$BPSysAve - pred.lasso)^2)
+pred.error.lasso
+```
+
+We can see that the prediction error in these three models are roughly the same. 
+The model of AIC has the best cross-Validation calibration graph, and all models have similar prediction error, therefore I choose AIC model.
+
+\newpage
+```{r}
+final_mod <- lm(BPSysAve ~ Gender + Age + MaritalStatus + Poverty + BMI + SmokeNow, data = train)
+summary(final_mod)
+```
+
+\newpage
+Model diagnostic
+```{r}
+#residual plot
+final_mod_residual <- rstandard(final_mod)
+final_mod_yhat <- fitted(final_mod)
+plot(final_mod_yhat,final_mod_residual)
+```
+From the residual plot, we can conclude that the final model satisfy the independence condition since the data points are spreading out randomly without any patterns in the plot, and also we cannot see any sequential patterns such as small groups of data points each concentrated in different part of the plot or periodic patterns in the plot.
+
+The linearity condition is satisfied, we are able to draw a flat horizontal line at zero in the graph where all data points are dispersed randomly and nicely around that flat horizontal 0 line. We cannot see any non-random pattern such as U-shaped from the plot.
+
+The homoscedasticity condition is satisfied since we cannot see any increasing or decreasing trend in the plot, it is roughly like a horizontal-band pattern.
+
+
+```{r}
+#QQ plot
+qqnorm(final_mod_residual)
+qqline(final_mod_residual)
+```
+We can see obvious deviation of its both two ends from the end, therefore the normality is not okay for this model.
+
+
+\newpage
+Trying to use transformation
+```{r}
+#I choose not to use transformation on x since the linearity is fine, and I try to use transformation on y which may change linearity, normality and constant variance although my goal is only to improve the normality. 
+summary(powerTransform(cbind(train$BPSysAve)))
+```
+-1.0889 is approximately -1. 
+```{r}
+train_after_trans <- train %>% mutate(BPSysAve_after_trans = BPSysAve ^ (-1))
+final_mod_after_trans <- lm(BPSysAve_after_trans ~ Gender + Age + MaritalStatus + Poverty + BMI +  SmokeNow, data = train_after_trans)
+final_mod_residual_after_trans <- rstandard(final_mod_after_trans)
+final_mod_yhat_after_trans <- fitted(final_mod_after_trans)
+plot(final_mod_yhat_after_trans,final_mod_residual_after_trans)
+```
+```{r}
+qqnorm(final_mod_residual_after_trans)
+qqline(final_mod_residual_after_trans)
+```
+
+We can see that the features and interpretations of both residual plot and QQ plot after transformation on y is roughly the same as before, and it will even cause more complexity of my model without any improvement of the assumptions. Therefore, I will still use the model before the transformation.
